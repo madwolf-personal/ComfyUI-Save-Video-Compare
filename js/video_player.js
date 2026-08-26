@@ -32,6 +32,18 @@ function styleSelect(s) {
 
 const BAR_HEIGHT = 26;
 
+// `nodeType.prototype.onExecuted` is only invoked by ComfyUI for nodes
+// that are part of the currently loaded/active graph. Switching to a
+// different workflow tab swaps out the in-memory graph, so if a run
+// finishes while you're on another tab, the node instance for the
+// finished run never receives onExecuted and its result never gets
+// cached to localStorage — leaving the player showing the previous run.
+//
+// `api` (the websocket client), on the other hand, receives "executed"
+// events globally regardless of which tab/graph is currently active, so
+// we mirror the result into localStorage from there too. This listener
+// is registered once at module load, not per-node, so it keeps working
+// even while this node isn't mounted anywhere.
 let globalExecutedListenerAdded = false;
 function ensureGlobalExecutedListener() {
     if (globalExecutedListenerAdded) return;
@@ -44,7 +56,9 @@ function ensureGlobalExecutedListener() {
         try {
             localStorage.setItem("videoPlayerPath_" + detail.node, p || "");
         } catch (e) {}
-        
+        // If the node for this id happens to be mounted right now (e.g.
+        // you're on this tab, or switched back before the run finished),
+        // update it live instead of waiting for the next onConfigure.
         const liveNode = app.graph?._nodes_by_id?.[detail.node];
         if (liveNode && liveNode.videoPlayerLoad) {
             liveNode.videoPlayerLoad(p, true);
@@ -73,9 +87,9 @@ app.registerExtension({
             function readSettings() {
                 try {
                     const raw = localStorage.getItem(settingsKey);
-                    if (raw) return Object.assign({ loop: false, speed: 1, volume: 1, muted: false }, JSON.parse(raw));
+                    if (raw) return Object.assign({ loop: false, speed: 1, volume: 1, muted: false, autoplay: false }, JSON.parse(raw));
                 } catch (e) {}
-                return { loop: false, speed: 1, volume: 1, muted: false };
+                return { loop: false, speed: 1, volume: 1, muted: false, autoplay: false };
             }
             function writeSettings(partial) {
                 const merged = Object.assign(readSettings(), partial);
@@ -194,6 +208,13 @@ app.registerExtension({
             styleBtn(fullscreenBtn);
             bar.appendChild(fullscreenBtn);
 
+            const autoplayBtn = document.createElement("button");
+            autoplayBtn.dataset.autoplay = settings.autoplay ? "on" : "off";
+            autoplayBtn.textContent = settings.autoplay ? "auto:on" : "auto:off";
+            autoplayBtn.title = "Autoplay new videos (A)";
+            styleBtn(autoplayBtn);
+            bar.appendChild(autoplayBtn);
+
             video.loop = settings.loop;
             video.playbackRate = settings.speed;
             video.volume = settings.volume;
@@ -260,6 +281,12 @@ app.registerExtension({
                 muteBtn.textContent = video.muted ? "\uD83D\uDD07" : "\uD83D\uDD0A";
                 writeSettings({ muted: video.muted });
             };
+            autoplayBtn.onclick = () => {
+                const next = !(readSettings().autoplay);
+                autoplayBtn.dataset.autoplay = next ? "on" : "off";
+                autoplayBtn.textContent = next ? "auto:on" : "auto:off";
+                writeSettings({ autoplay: next });
+            };
             volume.addEventListener("input", () => {
                 video.volume = parseFloat(volume.value);
                 let muted = video.muted;
@@ -320,7 +347,7 @@ app.registerExtension({
             function onKeyDown(e) {
                 if (!isHovered) return;
                 const key = e.key.toLowerCase();
-                if (!["f", " ", "m", "l", ",", ".", "/"].includes(key)) return;
+                if (!["f", " ", "m", "l", "a", ",", ".", "/"].includes(key)) return;
                 const active = document.activeElement;
                 if (
                     active &&
@@ -343,6 +370,8 @@ app.registerExtension({
                     muteBtn.onclick();
                 } else if (key === "l") {
                     loopBtn.onclick();
+                } else if (key === "a") {
+                    autoplayBtn.onclick();
                 } else if (key === ",") {
                     const idx = closestSpeedIndex();
                     setSpeed(SPEEDS[Math.max(idx - 1, 0)]);
@@ -390,7 +419,11 @@ app.registerExtension({
                     video.playbackRate = s.speed;
                     video.volume = s.volume;
                     video.muted = s.muted;
-                    if (autoplay) {
+                    // `autoplay` here means "this is a freshly finished
+                    // generation, not a restore of a previously-viewed
+                    // video" — whether it actually plays is gated by the
+                    // user's autoplay toggle.
+                    if (autoplay && s.autoplay) {
                         video.play().catch(() => {});
                     }
                 };
@@ -408,6 +441,18 @@ app.registerExtension({
             });
 
             const RESERVED = 60; // title bar + margins (no video_path widget anymore)
+
+            // IMPORTANT: computeSize must NOT read node.size[1] to derive its
+            // return value. LiteGraph uses the widget's computed size (plus
+            // its own internal padding) to decide the node's *minimum*
+            // required height on every layout pass, and grows the node if
+            // needed. If we feed node.size[1] back into that calculation,
+            // any padding LiteGraph adds gets baked into node.size[1]
+            // permanently, and the next layout pass grows it again — a
+            // feedback loop that compounds every time layout runs (e.g. on
+            // every tab switch, which forces a redraw/layout in ComfyUI).
+            // Instead we track the node's height ourselves, only updating
+            // our cached value when the user actually resizes the node.
             node._videoPlayerHeight = Math.max(node.size[1] || 320, 320);
 
             domWidget.computeSize = function (width) {
