@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 function formatTime(s) {
     if (!isFinite(s)) return "0:00";
@@ -31,10 +32,31 @@ function styleSelect(s) {
 
 const BAR_HEIGHT = 26;
 
+let globalExecutedListenerAdded = false;
+function ensureGlobalExecutedListener() {
+    if (globalExecutedListenerAdded) return;
+    globalExecutedListenerAdded = true;
+    api.addEventListener("executed", (event) => {
+        const detail = event.detail;
+        if (!detail || !detail.output || !detail.output.video_path) return;
+        const p = detail.output.video_path[0];
+        if (p === undefined) return;
+        try {
+            localStorage.setItem("videoPlayerPath_" + detail.node, p || "");
+        } catch (e) {}
+        
+        const liveNode = app.graph?._nodes_by_id?.[detail.node];
+        if (liveNode && liveNode.videoPlayerLoad) {
+            liveNode.videoPlayerLoad(p, true);
+        }
+    });
+}
+
 app.registerExtension({
     name: "video_player.custom",
     async beforeRegisterNodeDef(nodeType, nodeData, appRef) {
         if (nodeData.name !== "VideoPlayerNode") return;
+        ensureGlobalExecutedListener();
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -354,7 +376,7 @@ app.registerExtension({
                 return v;
             }
 
-            function loadPath(p) {
+            function loadPath(p, autoplay = false) {
                 p = stripQuotes(p);
                 if (!p) {
                     video.removeAttribute("src");
@@ -368,7 +390,9 @@ app.registerExtension({
                     video.playbackRate = s.speed;
                     video.volume = s.volume;
                     video.muted = s.muted;
-                    video.play().catch(() => {});
+                    if (autoplay) {
+                        video.play().catch(() => {});
+                    }
                 };
                 video.addEventListener("canplay", playWhenReady);
                 video.load();
@@ -383,20 +407,26 @@ app.registerExtension({
                 serialize: false,
             });
 
+            const RESERVED = 60; // title bar + margins (no video_path widget anymore)
+            node._videoPlayerHeight = Math.max(node.size[1] || 320, 320);
+
             domWidget.computeSize = function (width) {
                 const w = width || node.size[0];
-                const reserved = 60; // title bar + margins (no video_path widget anymore)
-                const h = Math.max(node.size[1] - reserved, 120);
+                const h = Math.max(node._videoPlayerHeight - RESERVED, 120);
                 return [w, h];
             };
 
             const onResize = node.onResize;
             node.onResize = function (size) {
                 if (onResize) onResize.apply(this, arguments);
+                // Cache the height from this explicit resize event only —
+                // never from a read of node.size[1] inside computeSize.
+                node._videoPlayerHeight = Math.max(size[1], 320);
                 node.setDirtyCanvas(true, true);
             };
 
             node.setSize([Math.max(node.size[0], 340), Math.max(node.size[1], 320)]);
+            node._videoPlayerHeight = Math.max(node.size[1], 320);
 
             return r;
         };
@@ -406,7 +436,7 @@ app.registerExtension({
             const r = onExecuted ? onExecuted.apply(this, arguments) : undefined;
             if (message && message.video_path && message.video_path[0] !== undefined) {
                 const p = message.video_path[0];
-                if (this.videoPlayerLoad) this.videoPlayerLoad(p);
+                if (this.videoPlayerLoad) this.videoPlayerLoad(p, true);
                 try {
                     localStorage.setItem("videoPlayerPath_" + this.id, p || "");
                 } catch (e) {}

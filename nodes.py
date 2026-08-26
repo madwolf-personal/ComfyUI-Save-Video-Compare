@@ -1,6 +1,7 @@
 import os
 
 import folder_paths
+from comfy.cli_args import args
 from comfy_api.latest import ComfyExtension, io
 
 
@@ -14,6 +15,10 @@ class VideoPlayerNode(io.ComfyNode):
             inputs=[
                 io.Video.Input("video"),
                 io.String.Input("filename_prefix", default="video/ComfyUI"),
+            ],
+            hidden=[
+                io.Hidden.prompt,
+                io.Hidden.extra_pnginfo,
             ],
             outputs=[
                 io.String.Output(display_name="video_path"),
@@ -29,7 +34,22 @@ class VideoPlayerNode(io.ComfyNode):
         os.makedirs(full_output_folder, exist_ok=True)
         file = f"{filename}_{counter:05}_.mp4"
         path = os.path.join(full_output_folder, file)
-        video.save_to(path)
+
+        # Safely access the hidden ComfyUI states
+        hidden = getattr(cls, "hidden", None)
+        prompt = getattr(hidden, "prompt", None) if hidden else None
+        extra_pnginfo = getattr(hidden, "extra_pnginfo", None) if hidden else None
+
+        metadata = None
+        if not args.disable_metadata:
+            metadata = {}
+            if prompt is not None:
+                metadata["prompt"] = prompt
+            if extra_pnginfo is not None:
+                for key, value in extra_pnginfo.items():
+                    metadata[key] = value
+
+        video.save_to(path, metadata=metadata)
 
         return io.NodeOutput(path, ui={"video_path": [path]})
 
