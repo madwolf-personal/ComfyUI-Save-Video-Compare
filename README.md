@@ -1,5 +1,5 @@
 # ComfyUI Video Player Node
-<img width="979" height="674" alt="image" src="https://github.com/user-attachments/assets/1ab49cac-5d2a-40bd-aa33-be813c5f6144" />
+<img width="1042" height="885" alt="image" src="https://github.com/user-attachments/assets/fed45374-a957-4c27-abe0-b3290062b149" />
 
 A custom ComfyUI node that plays back a generated/loaded video directly on the
 node itself, with a full set of playback controls and keyboard shortcuts —
@@ -13,10 +13,14 @@ no need to open the output folder or a separate viewer.
    video-loading node) and a `filename_prefix` string.
 2. Saves the video to disk under ComfyUI's output directory using the same
    naming convention as other save nodes (`prefix_00001_.mp4`, incrementing).
-3. Streams that saved file back into an embedded `<video>` player rendered
+3. Outputs the saved file's path as a string, and passes the original
+   `video` straight through as a `VIDEO` output — the same pattern ComfyUI's
+   own `SaveImage`/`SaveVideo` nodes use — so you can chain further nodes
+   off this one instead of re-wiring back to the original source.
+4. Streams that saved file back into an embedded `<video>` player rendered
    right on the node, with its own transport bar (play/pause, seek, loop,
    speed, volume/mute, fullscreen).
-4. Automatically loads the new video every time the workflow runs, plays it
+5. Automatically loads the new video every time the workflow runs, plays it
    if the autoplay toggle is on, and remembers the last-played file and
    your control settings (loop, speed, volume, mute, autoplay) across page
    reloads / tab switches.
@@ -26,9 +30,13 @@ no need to open the output folder or a separate viewer.
 ### Backend (`nodes.py`)
 - `VideoPlayerNode.execute()` writes the incoming video to
   `ComfyUI/output/<filename_prefix>_<counter>_.mp4` using
-  `folder_paths.get_save_image_path`, then returns the saved path both as
-  the node's `video_path` string output and via the `ui` payload so the
-  frontend widget can pick it up immediately after execution.
+  `folder_paths.get_save_image_path`, then returns two outputs: the saved
+  path as a `video_path` string, and the original `video` object passed
+  straight through as a `video` output. It also sends the path via the
+  `ui` payload so the frontend widget can pick it up immediately after
+  execution. The passthrough output means you don't need a separate branch
+  back to the original video source if you want to keep processing it
+  after saving/previewing.
 
 ### Backend (`__init__.py`)
 - Registers an HTTP route, `GET /video_player/stream`, that serves the saved
