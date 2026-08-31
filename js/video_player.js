@@ -215,6 +215,15 @@ app.registerExtension({
             styleBtn(autoplayBtn);
             bar.appendChild(autoplayBtn);
 
+            const dimsLabel = document.createElement("span");
+            dimsLabel.textContent = "";
+            dimsLabel.style.whiteSpace = "nowrap";
+            dimsLabel.style.flexShrink = "0";
+            dimsLabel.style.marginLeft = "auto";
+            dimsLabel.style.paddingLeft = "6px";
+            dimsLabel.style.color = "#999";
+            bar.appendChild(dimsLabel);
+
             video.loop = settings.loop;
             video.playbackRate = settings.speed;
             video.volume = settings.volume;
@@ -243,6 +252,11 @@ app.registerExtension({
             });
             video.addEventListener("loadedmetadata", () => {
                 timeLabel.textContent = `${formatTime(0)} / ${formatTime(video.duration)}`;
+                if (video.videoWidth && video.videoHeight) {
+                    dimsLabel.textContent = `${video.videoWidth}\u00D7${video.videoHeight}`;
+                } else {
+                    dimsLabel.textContent = "";
+                }
             });
 
             seek.addEventListener("input", () => {
@@ -409,6 +423,7 @@ app.registerExtension({
                 p = stripQuotes(p);
                 if (!p) {
                     video.removeAttribute("src");
+                    dimsLabel.textContent = "";
                     return;
                 }
                 video.src = "/video_player/stream?path=" + encodeURIComponent(p);

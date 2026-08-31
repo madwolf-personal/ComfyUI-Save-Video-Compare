@@ -1,5 +1,6 @@
 import os
 import mimetypes
+import asyncio
 from aiohttp import web
 import server
 
@@ -36,15 +37,20 @@ async def video_player_stream(request):
         }
         resp = web.StreamResponse(status=206, headers=headers)
         await resp.prepare(request)
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = chunk_size
-            while remaining > 0:
-                chunk = f.read(min(65536, remaining))
-                if not chunk:
-                    break
-                await resp.write(chunk)
-                remaining -= len(chunk)
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    await resp.write(chunk)
+                    remaining -= len(chunk)
+        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+            # Client aborted the request (seek/reload/tab close) while we
+            # were still writing — nothing to do, just stop streaming.
+            pass
         return resp
 
     headers = {
@@ -54,12 +60,15 @@ async def video_player_stream(request):
     }
     resp = web.StreamResponse(status=200, headers=headers)
     await resp.prepare(request)
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            await resp.write(chunk)
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                await resp.write(chunk)
+    except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+        pass
     return resp
 
 
