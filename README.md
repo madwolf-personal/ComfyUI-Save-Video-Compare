@@ -1,5 +1,3 @@
-# Currently some issue is going on with it, if you switch the tab then it shows old video first and after refresh it shows the new video it saved, probably the __init__.py fix to mute the annoying warnings in cmd window caused it, but yeah It works. 
-
 # ComfyUI Video Player Node
 
 A custom ComfyUI node that plays back a generated/loaded video directly on the
@@ -102,9 +100,17 @@ isn't over the player.
 | `M` | Mute / unmute |
 | `L` | Toggle loop on/off |
 | `A` | Toggle autoplay on/off |
+| `N` | Step forward 1 frame (pauses if playing) |
+| `B` | Step backward 1 frame (pauses if playing) |
 | `,` | Step playback speed down |
 | `.` | Step playback speed up |
 | `/` | Reset playback speed to 1x |
+
+**Frame stepping:** `N`/`B` pause the video (if it's currently playing) and
+nudge `currentTime` by ~1/30s. HTML5 `<video>` has no reliable cross-browser
+way to query a source's actual frame rate or step to an exact frame
+boundary, so this is an approximation — a small, consistent step rather
+than a guaranteed exact frame, and closest to accurate for ~30fps sources.
 
 **Loop behavior:** if you turn loop on while the video is paused at (or
 very near) the end, it automatically restarts and resumes playback right
