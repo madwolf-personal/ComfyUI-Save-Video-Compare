@@ -15,9 +15,10 @@ no need to open the output folder or a separate viewer.
 3. Streams that saved file back into an embedded `<video>` player rendered
    right on the node, with its own transport bar (play/pause, seek, loop,
    speed, volume/mute, fullscreen).
-4. Automatically loads and plays the new video every time the workflow runs,
-   and remembers the last-played file and your control settings (loop,
-   speed, volume, mute) across page reloads / tab switches.
+4. Automatically loads the new video every time the workflow runs, plays it
+   if the autoplay toggle is on, and remembers the last-played file and
+   your control settings (loop, speed, volume, mute, autoplay) across page
+   reloads / tab switches.
 
 ## How it works
 
@@ -34,6 +35,10 @@ no need to open the output folder or a separate viewer.
 - Supports HTTP `Range` requests (206 Partial Content), which is what lets
   the `<video>` element seek instantly instead of downloading the whole file
   first.
+- Gracefully handles the client aborting an in-progress stream (seeking,
+  reloading the page, closing the tab) by catching the resulting
+  connection errors instead of letting them surface as unhandled server
+  tracebacks.
 
 ### Frontend (`js/video_player.js`)
 - Registers a ComfyUI extension that hooks into `VideoPlayerNode`'s
@@ -41,11 +46,17 @@ no need to open the output folder or a separate viewer.
   manage a DOM widget containing the `<video>` element and control bar.
 - On every workflow execution, reads the `video_path` returned by the node
   and points the `<video>` element at
-  `/video_player/stream?path=<that path>`, then autoplays it.
+  `/video_player/stream?path=<that path>`, then autoplays it if the
+  autoplay toggle is on.
 - Persists the last played path and your control preferences (loop / speed
-  / volume / muted) in `localStorage`, keyed by the node's ID, so reopening
-  or reloading the graph restores playback state without needing a visible
-  path widget on the node.
+  / volume / muted / autoplay) in `localStorage`, keyed by the node's ID, so
+  reopening or reloading the graph restores playback state without needing
+  a visible path widget on the node.
+- Also listens for `executed` events globally via the websocket API client,
+  not just the node's own `onExecuted` hook. This keeps the cached path and
+  live player in sync even if a run finishes while you're on a different
+  workflow tab, since `onExecuted` is only delivered to nodes in the
+  currently active graph.
 
 ## Controls
 
@@ -61,9 +72,17 @@ The control bar under the video gives you:
 | 🔊 / 🔇 button | Mute / unmute |
 | Volume slider | Adjust volume (0–1) |
 | ⛶ button | Toggle fullscreen |
+| `auto:on` / `auto:off` button | Toggle autoplay for freshly generated videos |
+| Resolution label | Shows the loaded video's width × height |
 
 Clicking the video itself also toggles play/pause, and double-clicking
 toggles fullscreen.
+
+The autoplay toggle only affects videos that just finished generating (a
+fresh `onExecuted` result) — it does **not** autoplay a video you're
+restoring from a previous session on page load/tab switch. The resolution
+label fills in once the browser has read the video's metadata, and updates
+automatically every time a new video loads.
 
 ## Keyboard Shortcuts
 
@@ -80,6 +99,7 @@ isn't over the player.
 | `Space` | Play / pause |
 | `M` | Mute / unmute |
 | `L` | Toggle loop on/off |
+| `A` | Toggle autoplay on/off |
 | `,` | Step playback speed down |
 | `.` | Step playback speed up |
 | `/` | Reset playback speed to 1x |
