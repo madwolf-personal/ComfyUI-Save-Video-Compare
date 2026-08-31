@@ -1,3 +1,5 @@
+# Currently some issue is going on with it, if you switch the tab then it shows old video first and after refresh it shows the new video it saved, probably the __init__.py fix to mute the annoying warnings in cmd window caused it, but yeah It works. 
+
 # ComfyUI Video Player Node
 
 A custom ComfyUI node that plays back a generated/loaded video directly on the
