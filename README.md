@@ -1,4 +1,5 @@
 # ComfyUI Video Player Node
+<img width="979" height="674" alt="image" src="https://github.com/user-attachments/assets/1ab49cac-5d2a-40bd-aa33-be813c5f6144" />
 
 A custom ComfyUI node that plays back a generated/loaded video directly on the
 node itself, with a full set of playback controls and keyboard shortcuts —
