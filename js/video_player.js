@@ -44,6 +44,31 @@ const BAR_HEIGHT = 26;
 // we mirror the result into localStorage from there too. This listener
 // is registered once at module load, not per-node, so it keeps working
 // even while this node isn't mounted anywhere.
+//
+// Live-updating the actual <video> element is trickier: `app.graph` only
+// points at whichever tab's graph is currently active, so
+// `app.graph._nodes_by_id` misses nodes that are mounted but sitting in a
+// background tab. If we only checked that map, a run finishing while
+// you're on another tab would still update localStorage correctly, but
+// the already-mounted node in the background tab would never get its
+// videoPlayerLoad() call — it would keep showing the previous video's
+// <video src> until the whole page was reloaded (onConfigure, the only
+// other place that reloads from localStorage, only fires on
+// load/deserialize, not on a plain tab switch).
+//
+// So instead we track every mounted instance ourselves, keyed by node id,
+// in a registry that isn't tied to any one graph. onNodeCreated adds to
+// it, onRemoved cleans it up, and the "executed" listener below looks a
+// node up here directly rather than through app.graph.
+//
+// Caveat: node ids are only unique within a single graph, so if two
+// different open tabs each happen to contain a VideoPlayerNode with the
+// same id, the later-created one wins the registry slot and the earlier
+// one won't get live-updated (it'll still catch up via localStorage next
+// time it's actually reloaded/reconfigured). This is a narrower edge case
+// than the original bug, which failed for every background tab, always.
+const mountedVideoPlayerNodes = new Map();
+
 let globalExecutedListenerAdded = false;
 function ensureGlobalExecutedListener() {
     if (globalExecutedListenerAdded) return;
@@ -56,10 +81,8 @@ function ensureGlobalExecutedListener() {
         try {
             localStorage.setItem("videoPlayerPath_" + detail.node, p || "");
         } catch (e) {}
-        // If the node for this id happens to be mounted right now (e.g.
-        // you're on this tab, or switched back before the run finished),
-        // update it live instead of waiting for the next onConfigure.
-        const liveNode = app.graph?._nodes_by_id?.[detail.node];
+        // Update the live node wherever it's mounted — active tab or not.
+        const liveNode = mountedVideoPlayerNodes.get(detail.node);
         if (liveNode && liveNode.videoPlayerLoad) {
             liveNode.videoPlayerLoad(p, true);
         }
@@ -76,6 +99,7 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
             const node = this;
+            mountedVideoPlayerNodes.set(node.id, node);
 
             // Persist control settings (loop/speed/volume/mute) and the
             // last played path in localStorage, keyed by this node's id,
@@ -336,6 +360,24 @@ app.registerExtension({
 
             const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
+            // HTML5 <video> has no reliable cross-browser API for the
+            // source's actual frame rate (requestVideoFrameCallback gives
+            // per-frame callbacks in Chromium, but not a frame-duration or
+            // fps value, and isn't available everywhere). We approximate a
+            // "frame" as 1/30s, which is a reasonable default for typical
+            // ComfyUI video outputs. It won't land exactly on a real frame
+            // boundary for other frame rates, but it's a small, consistent
+            // step either way.
+            const FRAME_STEP = 1 / 30;
+
+            function stepFrame(direction) {
+                video.pause();
+                const duration = isFinite(video.duration) ? video.duration : Infinity;
+                let t = video.currentTime + direction * FRAME_STEP;
+                t = Math.min(Math.max(t, 0), duration);
+                video.currentTime = t;
+            }
+
             function setSpeed(v) {
                 video.playbackRate = v;
                 speedSelect.value = v;
@@ -361,7 +403,7 @@ app.registerExtension({
             function onKeyDown(e) {
                 if (!isHovered) return;
                 const key = e.key.toLowerCase();
-                if (!["f", " ", "m", "l", "a", ",", ".", "/"].includes(key)) return;
+                if (!["f", " ", "m", "l", "a", ",", ".", "/", "n", "b"].includes(key)) return;
                 const active = document.activeElement;
                 if (
                     active &&
@@ -394,6 +436,10 @@ app.registerExtension({
                     setSpeed(SPEEDS[Math.min(idx + 1, SPEEDS.length - 1)]);
                 } else if (key === "/") {
                     setSpeed(1);
+                } else if (key === "n") {
+                    stepFrame(1);
+                } else if (key === "b") {
+                    stepFrame(-1);
                 }
             }
             // Capture phase so this runs before ComfyUI's own global
@@ -404,6 +450,9 @@ app.registerExtension({
             const onRemoved = node.onRemoved;
             node.onRemoved = function () {
                 window.removeEventListener("keydown", onKeyDown, true);
+                if (mountedVideoPlayerNodes.get(node.id) === node) {
+                    mountedVideoPlayerNodes.delete(node.id);
+                }
                 if (onRemoved) onRemoved.apply(this, arguments);
             };
 
