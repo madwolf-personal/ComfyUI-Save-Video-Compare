@@ -1,5 +1,11 @@
 # ComfyUI Video Player / Compare Node
 
+### Not really all features covered but Watch the video if you want: 
+https://github.com/madwolf-personal/ComfyUI-Save-Video-Compare/blob/main/assets/Video%20Player.mp4
+
+<img width="1367" height="901" alt="image" src="https://github.com/user-attachments/assets/bed3fd44-558a-481a-a935-f9466634a222" />
+
+
 A custom ComfyUI node that plays back one or two generated/loaded videos
 directly on the node itself. With one video connected it's a full-featured
 player; with two connected it becomes an A/B swipe comparison, with
