@@ -75,16 +75,20 @@ function ensureGlobalExecutedListener() {
     globalExecutedListenerAdded = true;
     api.addEventListener("executed", (event) => {
         const detail = event.detail;
-        if (!detail || !detail.output || !detail.output.video_path) return;
-        const p = detail.output.video_path[0];
-        if (p === undefined) return;
+        if (!detail || !detail.output) return;
+        const outA = detail.output.video_path_a;
+        const outB = detail.output.video_path_b;
+        if (!outA && !outB) return;
+        const pA = outA ? outA[0] : "";
+        const pB = outB ? outB[0] : "";
         try {
-            localStorage.setItem("videoPlayerPath_" + detail.node, p || "");
+            localStorage.setItem("videoPlayerPathA_" + detail.node, pA || "");
+            localStorage.setItem("videoPlayerPathB_" + detail.node, pB || "");
         } catch (e) {}
         // Update the live node wherever it's mounted — active tab or not.
         const liveNode = mountedVideoPlayerNodes.get(detail.node);
         if (liveNode && liveNode.videoPlayerLoad) {
-            liveNode.videoPlayerLoad(p, true);
+            liveNode.videoPlayerLoad({ a: pA, b: pB }, true);
         }
     });
 }
@@ -102,11 +106,12 @@ app.registerExtension({
             mountedVideoPlayerNodes.set(node.id, node);
 
             // Persist control settings (loop/speed/volume/mute) and the
-            // last played path in localStorage, keyed by this node's id,
-            // so they survive tab switches without needing a visible
-            // (or hidden, which is buggy) video_path widget.
+            // last played A/B paths in localStorage, keyed by this node's
+            // id, so they survive tab switches without needing visible
+            // (or hidden, which is buggy) path widgets.
             const settingsKey = "videoPlayerSettings_" + node.id;
-            const pathKey = "videoPlayerPath_" + node.id;
+            const pathKeyA = "videoPlayerPathA_" + node.id;
+            const pathKeyB = "videoPlayerPathB_" + node.id;
 
             function readSettings() {
                 try {
@@ -122,16 +127,25 @@ app.registerExtension({
                 } catch (e) {}
                 return merged;
             }
-            function readLastPath() {
+            function readLastPaths() {
                 try {
-                    return localStorage.getItem(pathKey) || "";
+                    return {
+                        a: localStorage.getItem(pathKeyA) || "",
+                        b: localStorage.getItem(pathKeyB) || "",
+                    };
                 } catch (e) {
-                    return "";
+                    return { a: "", b: "" };
                 }
             }
-            function writeLastPath(p) {
+            function writeLastPaths(a, b) {
                 try {
-                    localStorage.setItem(pathKey, p || "");
+                    localStorage.setItem(pathKeyA, a || "");
+                    // An empty string here (vs. removing the key) is
+                    // intentional: it distinguishes "ran with a B video
+                    // once, now cleared" from "never had a B video", though
+                    // both currently behave the same way on read. Kept
+                    // simple and consistent with pathKeyA.
+                    localStorage.setItem(pathKeyB, b || "");
                 } catch (e) {}
             }
             const settings = readSettings();
@@ -147,17 +161,176 @@ app.registerExtension({
             container.style.fontFamily = "sans-serif";
             container.style.boxSizing = "border-box";
 
+            const stage = document.createElement("div");
+            stage.style.position = "relative";
+            stage.style.width = "100%";
+            stage.style.flex = "1 1 0";
+            stage.style.minHeight = "0";
+            stage.style.background = "#000";
+            container.appendChild(stage);
+
             const video = document.createElement("video");
+            video.style.position = "absolute";
+            video.style.inset = "0";
             video.style.width = "100%";
             video.style.height = "100%";
-            video.style.flex = "1 1 0";
-            video.style.minHeight = "0";
             video.style.display = "block";
             video.style.background = "#000";
             video.style.objectFit = "contain";
             video.preload = "metadata";
             video.playsInline = true;
-            container.appendChild(video);
+            stage.appendChild(video);
+
+            // --- Compare (A/B) mode ---
+            // videoB sits in a clipped wrapper stacked exactly on top of
+            // videoA. The wrapper's clip-path reveals only the left
+            // `sliderPct`% of videoB, so what's actually visible is A on
+            // the right and B on the left of the divider — a swipe
+            // comparison, driven by an ordinary <input type=range> rather
+            // than a draggable on-video handle, to keep this simple and
+            // keep the resizing behavior untouched (nothing here affects
+            // the node/DOM-widget sizing below).
+            const clipWrap = document.createElement("div");
+            clipWrap.style.position = "absolute";
+            clipWrap.style.inset = "0";
+            clipWrap.style.display = "none"; // shown only in compare mode
+            // This overlay sits on top of video A. Without this, hovering
+            // or clicking anywhere over video B's (left) side would hit
+            // this div/videoB instead of video A underneath — showing the
+            // browser's native "grab" cursor (video elements are
+            // draggable by default) and silently eating the
+            // click-to-toggle-play handler that's bound to video A. Since
+            // video B has no controls of its own anyway (it just mirrors
+            // A), there's nothing lost by letting all pointer interaction
+            // fall through to A everywhere in the stage.
+            clipWrap.style.pointerEvents = "none";
+            stage.appendChild(clipWrap);
+
+            const videoB = document.createElement("video");
+            videoB.style.position = "absolute";
+            videoB.style.inset = "0";
+            videoB.style.width = "100%";
+            videoB.style.height = "100%";
+            videoB.style.display = "block";
+            videoB.style.background = "#000";
+            videoB.style.objectFit = "contain";
+            videoB.preload = "metadata";
+            videoB.playsInline = true;
+            videoB.muted = true; // avoid doubled audio; A carries sound
+            videoB.draggable = false;
+            videoB.style.webkitUserDrag = "none";
+            videoB.style.pointerEvents = "none";
+            clipWrap.appendChild(videoB);
+
+            const divider = document.createElement("div");
+            divider.style.position = "absolute";
+            divider.style.top = "0";
+            divider.style.bottom = "0";
+            divider.style.width = "2px";
+            divider.style.background = "#fff";
+            divider.style.boxShadow = "0 0 3px rgba(0,0,0,0.8)";
+            divider.style.pointerEvents = "none";
+            divider.style.display = "none"; // shown only in compare mode
+            stage.appendChild(divider);
+
+            const labelA = document.createElement("span");
+            labelA.textContent = "A";
+            const labelB = document.createElement("span");
+            labelB.textContent = "B";
+            [labelA, labelB].forEach((l) => {
+                l.style.position = "absolute";
+                l.style.top = "4px";
+                l.style.padding = "1px 5px";
+                l.style.background = "rgba(0,0,0,0.55)";
+                l.style.color = "#fff";
+                l.style.fontSize = "10px";
+                l.style.borderRadius = "3px";
+                l.style.pointerEvents = "none";
+                l.style.display = "none"; // shown only in compare mode
+            });
+            labelA.style.right = "4px";
+            labelB.style.left = "4px";
+            stage.appendChild(labelA);
+            stage.appendChild(labelB);
+
+            let dividerPct = 50;
+            function setDividerPct(pct) {
+                dividerPct = pct;
+                clipWrap.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+                divider.style.left = `calc(${pct}% - 1px)`;
+            }
+            setDividerPct(50);
+
+            function setCompareMode(on) {
+                clipWrap.style.display = on ? "block" : "none";
+                divider.style.display = on ? "block" : "none";
+                labelA.style.display = on ? "block" : "none";
+                labelB.style.display = on ? "block" : "none";
+                if (!on) {
+                    videoB.pause();
+                    videoB.removeAttribute("src");
+                }
+            }
+
+            // --- Drag the divider directly on the video ---
+            // Dragging only starts when the pointer goes down within a few
+            // pixels of the divider line itself — not anywhere on the
+            // video — so a plain click elsewhere on the video still always
+            // toggles play/pause without any ambiguity about intent.
+            const DIVIDER_HIT_PX = 10;
+            let dividerDragActive = false;
+
+            function updateDividerFromClientX(clientX) {
+                const rect = stage.getBoundingClientRect();
+                if (rect.width <= 0) return;
+                let pct = ((clientX - rect.left) / rect.width) * 100;
+                pct = Math.min(Math.max(pct, 0), 100);
+                setDividerPct(pct);
+            }
+
+            stage.style.touchAction = "none";
+            stage.addEventListener("pointerdown", (e) => {
+                if (clipWrap.style.display === "none") return; // single mode
+                if (e.button !== undefined && e.button !== 0) return;
+                const rect = stage.getBoundingClientRect();
+                if (rect.width <= 0) return;
+                const dividerX = rect.left + (dividerPct / 100) * rect.width;
+                if (Math.abs(e.clientX - dividerX) > DIVIDER_HIT_PX) return;
+                dividerDragActive = true;
+                // A drag starting on the divider line was never a
+                // play/pause click to begin with, so suppress the
+                // trailing click event unconditionally rather than only
+                // after actual movement.
+                suppressNextClick = true;
+                e.preventDefault();
+                try {
+                    stage.setPointerCapture(e.pointerId);
+                } catch (err) {}
+            });
+            stage.addEventListener("pointermove", (e) => {
+                if (!dividerDragActive) return;
+                e.preventDefault();
+                updateDividerFromClientX(e.clientX);
+            });
+            function endDividerDrag(e) {
+                if (!dividerDragActive) return;
+                dividerDragActive = false;
+                setTimeout(() => {
+                    suppressNextClick = false;
+                }, 0);
+            }
+            stage.addEventListener("pointermove", (e) => {
+                if (dividerDragActive) return; // already handled above
+                if (clipWrap.style.display === "none") return; // single mode
+                const rect = stage.getBoundingClientRect();
+                if (rect.width <= 0) return;
+                const dividerX = rect.left + (dividerPct / 100) * rect.width;
+                video.style.cursor =
+                    Math.abs(e.clientX - dividerX) <= DIVIDER_HIT_PX ? "ew-resize" : "pointer";
+            });
+
+            stage.addEventListener("pointerup", endDividerDrag);
+            stage.addEventListener("pointercancel", endDividerDrag);
 
             const bar = document.createElement("div");
             bar.style.display = "flex";
@@ -254,6 +427,7 @@ app.registerExtension({
             video.muted = settings.muted;
 
             let seeking = false;
+            let suppressNextClick = false;
 
             playBtn.onclick = () => {
                 if (video.paused) video.play();
@@ -264,6 +438,10 @@ app.registerExtension({
             video.addEventListener("ended", () => (playBtn.textContent = "\u25B6"));
             video.style.cursor = "pointer";
             video.addEventListener("click", () => {
+                if (suppressNextClick) {
+                    suppressNextClick = false;
+                    return;
+                }
                 if (video.paused) video.play();
                 else video.pause();
             });
@@ -283,12 +461,27 @@ app.registerExtension({
                 }
             });
 
-            seek.addEventListener("input", () => {
+            // seek.addEventListener("input", () => {
+                // seeking = true;
+                // if (video.duration) {
+                    // video.currentTime = (seek.value / 1000) * video.duration;
+                // }
+            // });
+			
+			
+			// ===================================================
+			seek.addEventListener("input", () => {
                 seeking = true;
                 if (video.duration) {
-                    video.currentTime = (seek.value / 1000) * video.duration;
+                    const t = (seek.value / 1000) * video.duration;
+                    video.currentTime = t;
+                    if (videoB.src) {
+                        videoB.currentTime = t;
+                    }
                 }
             });
+			// ========================================================
+			
             seek.addEventListener("change", () => {
                 seeking = false;
             });
@@ -358,6 +551,49 @@ app.registerExtension({
             container.addEventListener("mouseenter", () => (isHovered = true));
             container.addEventListener("mouseleave", () => (isHovered = false));
 
+            // --- Keep videoB following videoA whenever it's loaded ---
+            // videoB has no controls of its own; it's a silent mirror of
+            // videoA's play/pause/seek/rate state, driven off A's events.
+            // Drift correction on timeupdate handles the normal small gaps
+            // between two independently-decoding <video> elements.
+            
+			
+			// function syncBFromA() {
+                // if (!videoB.src) return;
+                // if (video.paused && !videoB.paused) videoB.pause();
+                // if (!video.paused && videoB.paused) videoB.play().catch(() => {});
+                // videoB.playbackRate = video.playbackRate;
+                // videoB.loop = video.loop;
+                // if (Math.abs(videoB.currentTime - video.currentTime) > 0.15) {
+                    // videoB.currentTime = video.currentTime;
+                // }
+            // }
+			
+			// ====================================================
+			function syncBFromA(e) {
+                if (!videoB.src) return;
+                if (video.paused && !videoB.paused) videoB.pause();
+                if (!video.paused && videoB.paused) videoB.play().catch(() => {});
+                videoB.playbackRate = video.playbackRate;
+                videoB.loop = video.loop;
+
+                // When paused or seeking, sync tightly (~10ms) so frames match exactly.
+                // During active playback, keep the 150ms deadband to prevent decode stutter.
+                const isPausedOrSeeking = video.paused || (e && e.type === "seeked");
+                const threshold = isPausedOrSeeking ? 0.01 : 0.15;
+                if (Math.abs(videoB.currentTime - video.currentTime) > threshold) {
+                    videoB.currentTime = video.currentTime;
+                }
+            }
+			// ====================================================
+			
+			
+            video.addEventListener("play", syncBFromA);
+            video.addEventListener("pause", syncBFromA);
+            video.addEventListener("seeked", syncBFromA);
+            video.addEventListener("ratechange", syncBFromA);
+            video.addEventListener("timeupdate", syncBFromA);
+
             const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
             // HTML5 <video> has no reliable cross-browser API for the
@@ -370,13 +606,30 @@ app.registerExtension({
             // step either way.
             const FRAME_STEP = 1 / 30;
 
-            function stepFrame(direction) {
+            // function stepFrame(direction) {
+                // video.pause();
+                // const duration = isFinite(video.duration) ? video.duration : Infinity;
+                // let t = video.currentTime + direction * FRAME_STEP;
+                // t = Math.min(Math.max(t, 0), duration);
+                // video.currentTime = t;
+            // }
+			
+			// ====================================================
+			function stepFrame(direction) {
                 video.pause();
+                if (videoB.src) videoB.pause();
+
                 const duration = isFinite(video.duration) ? video.duration : Infinity;
                 let t = video.currentTime + direction * FRAME_STEP;
                 t = Math.min(Math.max(t, 0), duration);
                 video.currentTime = t;
+
+                if (videoB.src) {
+                    const durB = isFinite(videoB.duration) ? videoB.duration : duration;
+                    videoB.currentTime = Math.min(Math.max(t, 0), durB);
+                }
             }
+			// ==================================================
 
             function setSpeed(v) {
                 video.playbackRate = v;
@@ -468,74 +721,78 @@ app.registerExtension({
                 return v;
             }
 
-            function loadPath(p, autoplay = false) {
-                p = stripQuotes(p);
-                if (!p) {
+            function loadPaths({ a, b } = {}, autoplay = false) {
+                a = stripQuotes(a);
+                b = stripQuotes(b);
+
+                if (!a) {
                     video.removeAttribute("src");
                     dimsLabel.textContent = "";
-                    return;
+                } else {
+                    video.src = "/video_player/stream?path=" + encodeURIComponent(a);
+                    const playWhenReady = () => {
+                        video.removeEventListener("canplay", playWhenReady);
+                        const s = readSettings();
+                        video.loop = s.loop;
+                        video.playbackRate = s.speed;
+                        video.volume = s.volume;
+                        video.muted = s.muted;
+                        // `autoplay` here means "this is a freshly finished
+                        // generation, not a restore of a previously-viewed
+                        // video" — whether it actually plays is gated by the
+                        // user's autoplay toggle.
+                        if (autoplay && s.autoplay) {
+                            video.play().catch(() => {});
+                        }
+                    };
+                    video.addEventListener("canplay", playWhenReady);
+                    video.load();
                 }
-                video.src = "/video_player/stream?path=" + encodeURIComponent(p);
-                const playWhenReady = () => {
-                    video.removeEventListener("canplay", playWhenReady);
-                    const s = readSettings();
-                    video.loop = s.loop;
-                    video.playbackRate = s.speed;
-                    video.volume = s.volume;
-                    video.muted = s.muted;
-                    // `autoplay` here means "this is a freshly finished
-                    // generation, not a restore of a previously-viewed
-                    // video" — whether it actually plays is gated by the
-                    // user's autoplay toggle.
-                    if (autoplay && s.autoplay) {
-                        video.play().catch(() => {});
-                    }
-                };
-                video.addEventListener("canplay", playWhenReady);
-                video.load();
+
+                setCompareMode(!!b);
+                if (b) {
+                    videoB.src = "/video_player/stream?path=" + encodeURIComponent(b);
+                    videoB.load();
+                }
             }
 
-            node.videoPlayerLoad = loadPath;
+            node.videoPlayerLoad = loadPaths;
 
-            const lastPath = readLastPath();
-            if (lastPath) loadPath(lastPath);
+            const lastPaths = readLastPaths();
+            if (lastPaths.a || lastPaths.b) loadPaths(lastPaths);
 
             const domWidget = node.addDOMWidget("video_player_widget", "videoplayer", container, {
                 serialize: false,
             });
 
-            const RESERVED = 60; // title bar + margins (no video_path widget anymore)
-
-            // IMPORTANT: computeSize must NOT read node.size[1] to derive its
-            // return value. LiteGraph uses the widget's computed size (plus
-            // its own internal padding) to decide the node's *minimum*
-            // required height on every layout pass, and grows the node if
-            // needed. If we feed node.size[1] back into that calculation,
-            // any padding LiteGraph adds gets baked into node.size[1]
-            // permanently, and the next layout pass grows it again — a
-            // feedback loop that compounds every time layout runs (e.g. on
-            // every tab switch, which forces a redraw/layout in ComfyUI).
-            // Instead we track the node's height ourselves, only updating
-            // our cached value when the user actually resizes the node.
-            node._videoPlayerHeight = Math.max(node.size[1] || 320, 320);
+            // Previous approach: computeSize derived its answer from a
+            // mutable cache (_videoPlayerHeight), and onResize wrote the
+            // resulting size back into that same cache. ANY two-way
+            // coupling like that can drift and compound over repeated
+            // layout passes, no matter how well the overhead is measured/
+            // calibrated — especially since newer ComfyUI frontends can
+            // call computeSize on every render tick, not just on explicit
+            // resize events. That's what caused the node to visibly grow
+            // by itself, non-stop.
+            //
+            // Fix: break the loop by construction. computeSize now returns
+            // a fixed constant minimum height, never derived from the
+            // node's current size or any value we update elsewhere. There
+            // is nothing for onResize to feed back into, so there is no
+            // path left for a loop to form. The node can still be resized
+            // normally by the user (dragging the corner) — LiteGraph's own
+            // resize handling takes care of that independently, and the
+            // DOM widget fills whichever size the node ends up at via CSS
+            // (height: 100% on the container), not via JS recomputation.
+            const MIN_WIDGET_HEIGHT = 260;
+            const MIN_WIDGET_WIDTH = 280;
 
             domWidget.computeSize = function (width) {
-                const w = width || node.size[0];
-                const h = Math.max(node._videoPlayerHeight - RESERVED, 120);
-                return [w, h];
+                return [width || MIN_WIDGET_WIDTH, MIN_WIDGET_HEIGHT];
             };
 
-            const onResize = node.onResize;
-            node.onResize = function (size) {
-                if (onResize) onResize.apply(this, arguments);
-                // Cache the height from this explicit resize event only —
-                // never from a read of node.size[1] inside computeSize.
-                node._videoPlayerHeight = Math.max(size[1], 320);
-                node.setDirtyCanvas(true, true);
-            };
-
-            node.setSize([Math.max(node.size[0], 340), Math.max(node.size[1], 320)]);
-            node._videoPlayerHeight = Math.max(node.size[1], 320);
+            if (node.size[0] < 340) node.size[0] = 340;
+            if (node.size[1] < 320) node.size[1] = 320;
 
             return r;
         };
@@ -543,11 +800,13 @@ app.registerExtension({
         const onExecuted = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (message) {
             const r = onExecuted ? onExecuted.apply(this, arguments) : undefined;
-            if (message && message.video_path && message.video_path[0] !== undefined) {
-                const p = message.video_path[0];
-                if (this.videoPlayerLoad) this.videoPlayerLoad(p, true);
+            if (message && (message.video_path_a || message.video_path_b)) {
+                const pA = message.video_path_a ? message.video_path_a[0] : "";
+                const pB = message.video_path_b ? message.video_path_b[0] : "";
+                if (this.videoPlayerLoad) this.videoPlayerLoad({ a: pA, b: pB }, true);
                 try {
-                    localStorage.setItem("videoPlayerPath_" + this.id, p || "");
+                    localStorage.setItem("videoPlayerPathA_" + this.id, pA || "");
+                    localStorage.setItem("videoPlayerPathB_" + this.id, pB || "");
                 } catch (e) {}
             }
             return r;
@@ -556,12 +815,13 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
-            let lastPath = "";
+            let pA = "", pB = "";
             try {
-                lastPath = localStorage.getItem("videoPlayerPath_" + this.id) || "";
+                pA = localStorage.getItem("videoPlayerPathA_" + this.id) || "";
+                pB = localStorage.getItem("videoPlayerPathB_" + this.id) || "";
             } catch (e) {}
-            if (lastPath && this.videoPlayerLoad) {
-                this.videoPlayerLoad(lastPath);
+            if ((pA || pB) && this.videoPlayerLoad) {
+                this.videoPlayerLoad({ a: pA, b: pB });
             }
             return r;
         };
